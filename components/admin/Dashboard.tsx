@@ -462,8 +462,8 @@ function DemoTools() {
   const reset = async () => {
     const ok = await confirm({
       title: "Reset the demo data?",
-      text: "Everything returns to the starting point: Zaitoon's menu, 16 tables and two weeks of sample history. Orders, guests and menu changes made since then are removed. Settings go back to their defaults.",
-      confirmLabel: "Reset everything",
+      text: "Guests, orders, waiter calls, reviews and campaigns are cleared, and two weeks of fresh sample history are loaded. Your settings, Wi-Fi, PINs, the menu and the tables with their QR codes stay exactly as they are.",
+      confirmLabel: "Reset demo data",
       danger: true,
     });
     if (ok) await run("reset", () => rpc("admin.demo.reset", { samples: true }), "Demo data has been reset");
@@ -510,7 +510,7 @@ function DemoTools() {
       </div>
       <div className="mt-5 space-y-1 border-t border-ink-900/8 pt-4">
         <Button variant="ghost" size="sm" block className="justify-start" icon={<RotateCcw className="size-3.5" />} loading={busy === "reset"} onClick={reset}>
-          Reset demo data to the starting point
+          Reset guests, orders and history
         </Button>
         <Button variant="ghost" size="sm" block className="justify-start" icon={<Eraser className="size-3.5" />} loading={busy === "clear"} onClick={clear}>
           Remove the sample history

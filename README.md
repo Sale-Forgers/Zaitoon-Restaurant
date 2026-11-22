@@ -60,7 +60,7 @@ Change them in Admin → Settings, or set `ADMIN_PIN`, `KITCHEN_PIN`, `WAITER_PI
 7. In the waiter pane open a table, press **Take order** and send an order from the tablet.
 8. Open `/admin` to show the dashboard, QR codes and Wi-Fi, the menu manager (mark a dish sold out and watch it change on the phone), guests, and push campaigns.
 
-Admin → Dashboard has demo tools: simulate an order, simulate a waiter call, and reset the demo data. Reset before a meeting so the sample history is fresh.
+Admin → Dashboard has demo tools: simulate an order, simulate a waiter call, and reset the demo data. Reset before a meeting so the sample history is fresh. A reset clears guests, orders and history only: settings, Wi-Fi, PINs, the menu and the tables with their printed QR codes are kept.
 
 ## Showing it on a real phone
 
