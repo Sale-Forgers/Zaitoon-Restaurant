@@ -12,6 +12,7 @@ import type {
   Order,
   OrderLine,
   OrderStatus,
+  PushSub,
   Settings,
   TableDoc,
   Visit,
@@ -160,8 +161,10 @@ function sampleLines(items: MenuItem[]): OrderLine[] {
   const drinks = items.filter((i) => ["mocktails", "shakes", "drinks", "tea", "juices"].includes(i.categoryId));
   const popular = items.filter((i) => i.popular);
   const chosen = new Map<string, OrderLine>();
-  const take = (item: MenuItem, qty: number) => {
-    if (chosen.has(item.id)) return;
+  // The manager may have renamed or removed categories, so any of these lists
+  // can be empty: an empty pick is simply skipped.
+  const take = (item: MenuItem | undefined, qty: number) => {
+    if (!item || chosen.has(item.id)) return;
     const variantId = item.variants?.length ? pick(item.variants).id : undefined;
     chosen.set(item.id, priceLine(item, { itemId: item.id, qty, variantId }));
   };
@@ -169,6 +172,7 @@ function sampleLines(items: MenuItem[]): OrderLine[] {
   if (Math.random() < 0.6) take(pick(mains), 1);
   if (Math.random() < 0.55) take(pick(sides), between(1, 3));
   if (Math.random() < 0.7) take(pick(drinks), between(1, 4));
+  if (!chosen.size) take(pick(items), between(1, 2));
   return [...chosen.values()];
 }
 
@@ -203,6 +207,9 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
   const visits: Visit[] = [];
   const orders: Order[] = [];
   let number = 1;
+  const active = tables.filter((t) => t.active);
+  const floor = active.length ? active : tables;
+  const waiters = settings.staff.waiters.length ? settings.staff.waiters : ["Waiter"];
 
   for (let d = 13; d >= 0; d--) {
     const dayStart = startOfDay(now - d * DAY);
@@ -221,9 +228,10 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
     times.sort((a, b) => a - b);
 
     for (const createdAt of times) {
-      const table = pick(tables);
+      const table = pick(floor);
       const guest = Math.random() < 0.6 ? pick(guests) : null;
       const lines = sampleLines(items);
+      if (!table || !lines.length) continue;
       const subtotal = lines.reduce((a, l) => a + l.total, 0);
       const bill = billFor(subtotal, settings.ordering);
       const prep = between(11, 24);
@@ -242,7 +250,7 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
         status: "closed",
         openedAt: createdAt - between(2, 6) * MIN,
         closedAt: createdAt + between(45, 80) * MIN,
-        closedBy: pick(settings.staff.waiters),
+        closedBy: pick(waiters),
         guestIds: guest ? [guest.id] : [],
         guestNames: guest ? [guest.name] : [],
         total: bill.total,
@@ -258,7 +266,7 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
         guestId: guest?.id,
         guestName: guest?.name ?? "Walk-in guest",
         source: viaQr ? "qr" : "waiter",
-        waiter: viaQr ? undefined : pick(settings.staff.waiters),
+        waiter: viaQr ? undefined : pick(waiters),
         lines,
         status: "served",
         times: stamps,
@@ -288,7 +296,7 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
       id: `sample-f${i + 1}`,
       guestId: g.id,
       guestName: g.name,
-      tableNumber: between(1, tables.length),
+      tableNumber: pick(floor)?.number,
       food,
       service,
       ambience,
@@ -329,7 +337,7 @@ export function buildSampleData(items: MenuItem[], tables: TableDoc[], settings:
       id: uid(),
       ts: now,
       kind: "system",
-      text: "Demo data loaded: real Zaitoon menu, 16 tables and two weeks of sample history.",
+      text: `Demo data loaded: ${items.length} dishes, ${tables.length} tables and two weeks of sample history.`,
     },
   ];
 
@@ -389,17 +397,65 @@ export async function db(): Promise<Store> {
   return store;
 }
 
-/** Wipes everything and loads a fresh demo data set. */
+/** Collections that record what guests and staff did, as opposed to how the restaurant is set up. */
+const ACTIVITY = [C.guests, C.visits, C.orders, C.calls, C.feedback, C.campaigns, C.events];
+
+/**
+ * "Reset demo data": clears everything guests and staff did and loads fresh
+ * sample history.
+ *
+ * What the restaurant has set up is left exactly as it is: settings (Wi-Fi,
+ * PINs and so on), the tables with their codes, and the menu. Table codes are
+ * printed on QR cards and written to NFC tags, so a reset must never change them.
+ */
 export async function resetDemo(withSamples = true) {
   const store = await getStore();
-  // Keep the push keys and session secret so signed-in screens and
-  // subscribed phones keep working after a reset.
-  const secrets = await store.get<Secrets>(C.secrets, "main");
-  await store.clear();
-  await store.seq("seeded");
-  await seedAll(store, withSamples);
-  if (secrets) await store.put(C.secrets, secrets);
-  g.__zrSeeded = Promise.resolve();
+  const [stored, tables, items] = await Promise.all([
+    store.get<Settings>(C.settings, "main"),
+    store.all<TableDoc>(C.tables),
+    store.all<MenuItem>(C.items),
+  ]);
+
+  if (!stored || !tables.length || !items.length) {
+    // Nothing is set up yet (or the store is incomplete): build it from scratch,
+    // keeping the server's keys so signed-in screens stay signed in.
+    const secrets = await store.get<Secrets>(C.secrets, "main");
+    await store.clear();
+    await store.seq("seeded");
+    await seedAll(store, withSamples);
+    if (secrets) await store.put(C.secrets, secrets);
+    g.__zrSeeded = Promise.resolve();
+    return;
+  }
+
+  for (const col of ACTIVITY) await store.clear(col);
+
+  // The guests are gone, so their phones' subscriptions go with them (a phone
+  // registers again by itself the next time its owner scans a table).
+  // Staff devices that asked for alerts keep them.
+  const subs = await store.all<PushSub>(C.subs);
+  await store.clear(C.subs);
+  await store.putMany(
+    C.subs,
+    subs.filter((s) => s.staff).map((s) => ({ ...s, guestId: undefined })),
+  );
+
+  if (withSamples) {
+    const s = buildSampleData(items, tables, await getSettings(store));
+    await store.putMany(C.guests, s.guests);
+    await store.putMany(C.visits, s.visits);
+    await store.putMany(C.orders, s.orders);
+    await store.putMany(C.feedback, s.feedback);
+    await store.putMany(C.campaigns, s.campaigns);
+    // Live order numbers continue after the sample ones.
+    const current = await store.seq("order", 0);
+    if (current < s.orders.length) await store.seq("order", s.orders.length - current);
+  }
+  await logEvent(
+    store,
+    "system",
+    "Demo data reset: guests, orders and history were cleared. Settings, tables and the menu were kept.",
+  );
 }
 
 export async function getSettings(store: Store): Promise<Settings> {
